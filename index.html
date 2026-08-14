@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Air Mouse</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --accent: #5b8def;
+    --accent-dim: #2c3a52;
+    --text: #e8eaf0;
+    --text-dim: #8b92a5;
+    --danger: #e2574c;
+    --good: #4cae6b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+  html, body {
+    height: 100%; margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overscroll-behavior: none; touch-action: none;
+  }
+  .wrap { display: flex; flex-direction: column; height: 100%; padding: 16px; gap: 12px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: 0.3px; }
+  .status { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); transition: background 0.2s; }
+  .dot.connected { background: var(--good); }
+
+  .panel {
+    background: var(--panel); border-radius: 16px; padding: 16px;
+  }
+
+  .big-btn {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    background: var(--accent-dim); color: var(--text); border: none; border-radius: 16px;
+    font-size: 20px; font-weight: 600; padding: 22px 0; transition: transform 0.05s, background 0.1s;
+  }
+  .big-btn:active { transform: scale(0.97); background: var(--accent); }
+
+  #enableBtn.active { background: var(--good); color: #06140c; }
+
+  .row { display: flex; gap: 10px; }
+
+  .sens-row { display: flex; align-items: center; gap: 10px; }
+  .sens-row label { font-size: 13px; color: var(--text-dim); white-space: nowrap; }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+
+  .click-row { display: flex; gap: 10px; }
+  .click-btn {
+    flex: 1; padding: 26px 0; border-radius: 16px; border: none;
+    background: var(--panel); border: 1px solid #2a2f3a; color: var(--text);
+    font-size: 16px; font-weight: 600;
+  }
+  .click-btn:active { background: var(--accent-dim); }
+
+  .scroll-strip {
+    height: 90px; border-radius: 16px; background: var(--panel);
+    border: 1px solid #2a2f3a; display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 13px; letter-spacing: 0.5px;
+  }
+
+  footer { text-align: center; font-size: 12px; color: var(--text-dim); margin-top: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Air Mouse</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">disconnected</span></div>
+  </header>
+
+  <button id="enableBtn" class="big-btn">Enable Motion</button>
+  <button id="recenterBtn" class="big-btn" style="display:none;">Recenter</button>
+
+  <div class="panel sens-row">
+    <label>Sensitivity</label>
+    <input type="range" id="sens" min="1" max="20" value="8">
+  </div>
+
+  <div class="click-row">
+    <button class="click-btn" id="leftClick">Left Click</button>
+    <button class="click-btn" id="rightClick">Right Click</button>
+  </div>
+
+  <div class="scroll-strip" id="scrollStrip">SWIPE HERE TO SCROLL</div>
+
+  <footer>Hold phone comfortably, tap Recenter, then move to steer the cursor.</footer>
+</div>
+
+<script>
+  const dot = document.getElementById('dot');
+  const statusText = document.getElementById('statusText');
+  const enableBtn = document.getElementById('enableBtn');
+  const recenterBtn = document.getElementById('recenterBtn');
+  const sens = document.getElementById('sens');
+  const leftClick = document.getElementById('leftClick');
+  const rightClick = document.getElementById('rightClick');
+  const scrollStrip = document.getElementById('scrollStrip');
+
+  let ws = null;
+  let motionActive = false;
+  let lastBeta = null, lastGamma = null;
+  let baseline = { beta: 0, gamma: 0 };
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => { dot.classList.add('connected'); statusText.textContent = 'connected'; };
+    ws.onclose = () => {
+      dot.classList.remove('connected'); statusText.textContent = 'reconnecting...';
+      setTimeout(connect, 1000);
+    };
+    ws.onerror = () => ws.close();
+  }
+  connect();
+
+  function send(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  }
+
+  function handleOrientation(e) {
+    if (!motionActive) return;
+    const beta = e.beta;   // front-back tilt, -180..180
+    const gamma = e.gamma; // left-right tilt, -90..90
+    if (beta === null || gamma === null) return;
+
+    if (lastBeta === null) { lastBeta = beta; lastGamma = gamma; return; }
+
+    let dBeta = beta - lastBeta;
+    let dGamma = gamma - lastGamma;
+
+    // ignore huge jumps (e.g. angle wraparound)
+    if (Math.abs(dBeta) > 30) dBeta = 0;
+    if (Math.abs(dGamma) > 30) dGamma = 0;
+
+    const s = Number(sens.value) * 0.6;
+    const dx = dGamma * s;
+    const dy = dBeta * s;
+
+    if (Math.abs(dx) > 0.15 || Math.abs(dy) > 0.15) {
+      send({ type: 'move', dx: dx, dy: dy });
+    }
+
+    lastBeta = beta;
+    lastGamma = gamma;
+  }
+
+  function startMotion() {
+    window.addEventListener('deviceorientation', handleOrientation, true);
+    motionActive = true;
+    enableBtn.textContent = 'Motion Enabled';
+    enableBtn.classList.add('active');
+    recenterBtn.style.display = 'block';
+  }
+
+  enableBtn.addEventListener('click', () => {
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      // iOS - needs explicit permission from a user gesture
+      DeviceOrientationEvent.requestPermission()
+        .then(state => {
+          if (state === 'granted') startMotion();
+          else alert('Motion permission denied. Enable it in Settings > Safari > Motion & Orientation Access.');
+        })
+        .catch(err => alert('Permission error: ' + err));
+    } else {
+      // Android / others - no explicit permission step needed
+      startMotion();
+    }
+  });
+
+  recenterBtn.addEventListener('click', () => {
+    lastBeta = null;
+    lastGamma = null;
+  });
+
+  leftClick.addEventListener('click', () => send({ type: 'click', button: 'left' }));
+  rightClick.addEventListener('click', () => send({ type: 'click', button: 'right' }));
+
+  // simple vertical swipe -> scroll
+  let touchStartY = null;
+  scrollStrip.addEventListener('touchstart', (e) => {
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+  scrollStrip.addEventListener('touchmove', (e) => {
+    if (touchStartY === null) return;
+    const y = e.touches[0].clientY;
+    const delta = touchStartY - y;
+    if (Math.abs(delta) > 4) {
+      send({ type: 'scroll', amount: delta > 0 ? -1 : 1 });
+      touchStartY = y;
+    }
+  }, { passive: true });
+  scrollStrip.addEventListener('touchend', () => { touchStartY = null; });
+
+  // keep screen awake-ish by preventing default touchmove scrolling on the page
+  document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+</script>
+</body>
+</html>
